@@ -20,104 +20,89 @@
       Include Files and Type Defines
 ----------------------------------------------------------------------------**/
 #include "blobclass.h"
-#include "fxdefs.h"
-#include "variables.h"
-#include "extract.h"
-#include "efio.h"
-#include "callcpp.h"
-#include "chartoname.h"
 
-#include <math.h>
 #include <stdio.h>
-#include <signal.h>
 
-#define MAXFILENAME             80
-#define MAXMATCHES              10
+#include "classify.h"
+#include "efio.h"
+#include "featdefs.h"
+#include "mf.h"
+#include "normfeat.h"
 
-// define default font name to be used in training
-#define FONT_NAME       "UnknownFont"
+static const char kUnknownFontName[] = "UnknownFont";
 
-/**----------------------------------------------------------------------------
-        Global Data Definitions and Declarations
-----------------------------------------------------------------------------**/
-/* name of current image file being processed */
-extern char imagefile[];
+STRING_VAR(classify_font_name, kUnknownFontName,
+           "Default font name to be used in training");
 
-/* parameters used to control the training process */
-static const char *FontName = FONT_NAME;
-
+namespace tesseract {
 /**----------------------------------------------------------------------------
             Public Code
 ----------------------------------------------------------------------------**/
-/*---------------------------------------------------------------------------*/
-void InitBlobClassifierVars() {
-/*
- **      Parameters: none
- **      Globals:
- **              FontName        name of font being trained on
- **      Operation: Install blob classifier variables into the wiseowl
- **              variable system.
- **      Return: none
- **      Exceptions: none
- **      History: Fri Jan 19 16:13:33 1990, DSJ, Created.
- */
-  VALUE dummy;
-
-  string_variable (FontName, "FontName", FONT_NAME);
-
-}                                /* InitBlobClassifierVars */
-
-
-/*---------------------------------------------------------------------------*/
-void
-LearnBlob (TBLOB * Blob, TEXTROW * Row, char BlobText[])
-/*
- **      Parameters:
- **              Blob            blob whose micro-features are to be learned
- **              Row             row of text that blob came from
- **              BlobText        text that corresponds to blob
- **              TextLength      number of characters in blob
- **      Globals:
- **              imagefile       base filename of the page being learned
- **              FontName        name of font currently being trained on
- **      Operation:
- **              Extract micro-features from the specified blob and append
- **              them to the appropriate file.
- **      Return: none
- **      Exceptions: none
- **      History: 7/28/89, DSJ, Created.
- */
-#define MAXFILENAME     80
-#define MAXCHARNAME     20
-#define MAXFONTNAME     20
-#define TRAIN_SUFFIX    ".tr"
-{
-  static FILE *FeatureFile = NULL;
-  char Filename[MAXFILENAME];
-  CHAR_DESC CharDesc;
-  LINE_STATS LineStats;
-
-  EnterLearnMode;
-
-  GetLineStatsFromRow(Row, &LineStats);
-
-  CharDesc = ExtractBlobFeatures (Blob, &LineStats);
-
-  // if a feature file is not yet open, open it
-  // the name of the file is the name of the image plus TRAIN_SUFFIX
-  if (FeatureFile == NULL) {
-    strcpy(Filename, imagefile);
-    strcat(Filename, TRAIN_SUFFIX);
-    FeatureFile = Efopen (Filename, "w");
-
-    cprintf ("TRAINING ... Font name = %s.\n", FontName);
+// Finds the name of the training font and returns it in fontname, by cutting
+// it out based on the expectation that the filename is of the form:
+// /path/to/dir/[lang].[fontname].exp[num]
+// The [lang], [fontname] and [num] fields should not have '.' characters.
+// If the global parameter classify_font_name is set, its value is used instead.
+void ExtractFontName(const STRING& filename, STRING* fontname) {
+  *fontname = classify_font_name;
+  if (*fontname == kUnknownFontName) {
+    // filename is expected to be of the form [lang].[fontname].exp[num]
+    // The [lang], [fontname] and [num] fields should not have '.' characters.
+    const char *basename = strrchr(filename.string(), '/');
+    const char *firstdot = strchr(basename ? basename : filename.string(), '.');
+    const char *lastdot  = strrchr(filename.string(), '.');
+    if (firstdot != lastdot && firstdot != NULL && lastdot != NULL) {
+      ++firstdot;
+      *fontname = firstdot;
+      fontname->truncate_at(lastdot - firstdot);
+    }
   }
+}
 
-  // label the features with a class name and font name
-  fprintf (FeatureFile, "\n%s %s ", FontName, BlobText);
+/*---------------------------------------------------------------------------*/
+// Extracts features from the given blob and saves them in the tr_file_data_
+// member variable.
+// fontname:  Name of font that this blob was printed in.
+// cn_denorm: Character normalization transformation to apply to the blob.
+// fx_info:   Character normalization parameters computed with cn_denorm.
+// blob_text: Ground truth text for the blob.
+void Classify::LearnBlob(const STRING& fontname, TBLOB* blob,
+                         const DENORM& cn_denorm,
+                         const INT_FX_RESULT_STRUCT& fx_info,
+                         const char* blob_text) {
+  CHAR_DESC CharDesc = NewCharDescription(feature_defs_);
+  CharDesc->FeatureSets[0] = ExtractMicros(blob, cn_denorm);
+  CharDesc->FeatureSets[1] = ExtractCharNormFeatures(fx_info);
+  CharDesc->FeatureSets[2] = ExtractIntCNFeatures(*blob, fx_info);
+  CharDesc->FeatureSets[3] = ExtractIntGeoFeatures(*blob, fx_info);
 
-  // write micro-features to file and clean up
-  WriteCharDescription(FeatureFile, CharDesc);
+  if (ValidCharDescription(feature_defs_, CharDesc)) {
+    // Label the features with a class name and font name.
+    tr_file_data_ += "\n";
+    tr_file_data_ += fontname;
+    tr_file_data_ += " ";
+    tr_file_data_ += blob_text;
+    tr_file_data_ += "\n";
+
+    // write micro-features to file and clean up
+    WriteCharDescription(feature_defs_, CharDesc, &tr_file_data_);
+  } else {
+    tprintf("Blob learned was invalid!\n");
+  }
   FreeCharDescription(CharDesc);
-
 }                                // LearnBlob
+
+// Writes stored training data to a .tr file based on the given filename.
+// Returns false on error.
+bool Classify::WriteTRFile(const STRING& filename) {
+  STRING tr_filename = filename + ".tr";
+  FILE* fp = Efopen(tr_filename.string(), "wb");
+  int len = tr_file_data_.length();
+  bool result =
+      fwrite(&tr_file_data_[0], sizeof(tr_file_data_[0]), len, fp) == len;
+  fclose(fp);
+  tr_file_data_.truncate_at(0);
+  return result;
+}
+
+}  // namespace tesseract.

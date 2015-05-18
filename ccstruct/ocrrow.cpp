@@ -17,11 +17,15 @@
  *
  **********************************************************************/
 
-#include "mfcpch.h"
 #include          "ocrrow.h"
 #include          "blobbox.h"
 
-ELISTIZE_S (ROW)
+// Include automatically generated configuration file if running autoconf.
+#ifdef HAVE_CONFIG_H
+#include "config_auto.h"
+#endif
+
+ELISTIZE (ROW)
 /**********************************************************************
  * ROW::ROW
  *
@@ -37,13 +41,18 @@ float ascenders,                 //ascender size
 float descenders,                //descender drop
 inT16 kern,                      //char gap
 inT16 space                      //word gap
-):
-baseline(spline_size, xstarts, coeffs) {
+)
+    : baseline(spline_size, xstarts, coeffs),
+      para_(NULL) {
   kerning = kern;                //just store stuff
   spacing = space;
   xheight = x_height;
   ascrise = ascenders;
+  bodysize = 0.0f;
   descdrop = descenders;
+  has_drop_cap_ = false;
+  lmargin_ = 0;
+  rmargin_ = 0;
 }
 
 
@@ -58,15 +67,30 @@ ROW::ROW(                 //constructor
          TO_ROW *to_row,  //source row
          inT16 kern,      //char gap
          inT16 space      //word gap
-        ) {
+        ) : para_(NULL) {
   kerning = kern;                //just store stuff
   spacing = space;
   xheight = to_row->xheight;
+  bodysize = to_row->body_size;
   ascrise = to_row->ascrise;
   descdrop = to_row->descdrop;
   baseline = to_row->baseline;
+  has_drop_cap_ = false;
+  lmargin_ = 0;
+  rmargin_ = 0;
 }
 
+// Returns the bounding box including the desired combination of upper and
+// lower noise/diacritic elements.
+TBOX ROW::restricted_bounding_box(bool upper_dots, bool lower_dots) const {
+  TBOX box;
+  // This is a read-only iteration of the words in the row.
+  WERD_IT it(const_cast<WERD_LIST *>(&words));
+  for (it.mark_cycle_pt(); !it.cycled_list(); it.forward()) {
+    box += it.data()->restricted_bounding_box(upper_dots, lower_dots);
+  }
+  return box;
+}
 
 /**********************************************************************
  * ROW::recalc_bounding_box
@@ -143,12 +167,14 @@ void ROW::move(                  // reposition row
 void ROW::print(          //print
                 FILE *fp  //file to print on
                ) {
-  tprintf ("Kerning= %d\n", kerning);
-  tprintf ("Spacing= %d\n", spacing);
-  bound_box.print ();
-  tprintf ("Xheight= %f\n", xheight);
-  tprintf ("Ascrise= %f\n", ascrise);
-  tprintf ("Descdrop= %f\n", descdrop);
+  tprintf("Kerning= %d\n", kerning);
+  tprintf("Spacing= %d\n", spacing);
+  bound_box.print();
+  tprintf("Xheight= %f\n", xheight);
+  tprintf("Ascrise= %f\n", ascrise);
+  tprintf("Descdrop= %f\n", descdrop);
+  tprintf("has_drop_cap= %d\n", has_drop_cap_);
+  tprintf("lmargin= %d, rmargin= %d\n", lmargin_, rmargin_);
 }
 
 
@@ -171,7 +197,6 @@ void ROW::plot(                //draw it
     word->plot (window, colour); //all in one colour
   }
 }
-#endif
 
 /**********************************************************************
  * ROW::plot
@@ -179,7 +204,6 @@ void ROW::plot(                //draw it
  * Draw the ROW in rainbow colours.
  **********************************************************************/
 
-#ifndef GRAPHICS_DISABLED
 void ROW::plot(               //draw it
                ScrollView* window  //window to draw in
               ) {
@@ -191,7 +215,7 @@ void ROW::plot(               //draw it
     word->plot (window);         //in rainbow colours
   }
 }
-#endif
+#endif  // GRAPHICS_DISABLED
 
 /**********************************************************************
  * ROW::operator=
@@ -199,18 +223,21 @@ void ROW::plot(               //draw it
  * Assign rows by duplicating the row structure but NOT the WERDLIST
  **********************************************************************/
 
-ROW & ROW::operator= (           //assignment
-const ROW & source               //from this
-) {
+ROW & ROW::operator= (const ROW & source) {
   this->ELIST_LINK::operator= (source);
   kerning = source.kerning;
   spacing = source.spacing;
   xheight = source.xheight;
+  bodysize = source.bodysize;
   ascrise = source.ascrise;
   descdrop = source.descdrop;
   if (!words.empty ())
     words.clear ();
   baseline = source.baseline;    //QSPLINES must do =
   bound_box = source.bound_box;
+  has_drop_cap_ = source.has_drop_cap_;
+  lmargin_ = source.lmargin_;
+  rmargin_ = source.rmargin_;
+  para_ = source.para_;
   return *this;
 }

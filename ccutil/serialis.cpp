@@ -17,96 +17,129 @@
  *
  **********************************************************************/
 
-#include          "mfcpch.h"     //precompiled headers
 #include "serialis.h"
-#include "scanutils.h"
+#include <stdio.h>
+#include "genericvector.h"
 
-/* **************************************************************************
+namespace tesseract {
 
-These are the only routines that write/read data to/from the serialisation.
+TFile::TFile()
+    : offset_(0), data_(NULL), data_is_owned_(false), is_writing_(false) {
+}
 
-"serialise_bytes" and "de_serialise_bytes" are used to serialise NON class
-items.  The "make_serialise" macro generates "serialise" and "de_serialise"
-member functions for the class name specified in the macro parameter.
+TFile::~TFile() {
+  if (data_is_owned_)
+    delete data_;
+}
 
-************************************************************************** */
+bool TFile::Open(const STRING& filename, FileReader reader) {
+  if (!data_is_owned_) {
+    data_ = new GenericVector<char>;
+    data_is_owned_ = true;
+  }
+  offset_ = 0;
+  is_writing_ = false;
+  if (reader == NULL)
+    return LoadDataFromFile(filename, data_);
+  else
+    return (*reader)(filename, data_);
+}
 
-DLLSYM void *de_serialise_bytes(FILE *f, int size) {
-  void *ptr;
+bool TFile::Open(const char* data, int size) {
+  offset_ = 0;
+  if (!data_is_owned_) {
+    data_ = new GenericVector<char>;
+    data_is_owned_ = true;
+  }
+  is_writing_ = false;
+  data_->init_to_size(size, 0);
+  memcpy(&(*data_)[0], data, size);
+  return true;
+}
 
-  ptr = alloc_mem (size);
-  /*
-  printf( "De_serialising bytes\n" );
-  printf( "  Addr: %d    Size: %d\n", int(ptr), size );
-  */
-  if (fread (ptr, size, 1, f) != 1)
-    READFAILED.error ("de_serialise_bytes", ABORT, NULL);
-  return ptr;
+bool TFile::Open(FILE* fp, inT64 end_offset) {
+  offset_ = 0;
+  inT64 current_pos = ftell(fp);
+  if (end_offset < 0) {
+    if (fseek(fp, 0, SEEK_END))
+      return false;
+    end_offset = ftell(fp);
+    if (fseek(fp, current_pos, SEEK_SET))
+      return false;
+  }
+  int size = end_offset - current_pos;
+  is_writing_ = false;
+  if (!data_is_owned_) {
+    data_ = new GenericVector<char>;
+    data_is_owned_ = true;
+  }
+  data_->init_to_size(size, 0);
+  return static_cast<int>(fread(&(*data_)[0], 1, size, fp)) == size;
+}
+
+char* TFile::FGets(char* buffer, int buffer_size) {
+  ASSERT_HOST(!is_writing_);
+  int size = 0;
+  while (size + 1 < buffer_size && offset_ < data_->size()) {
+    buffer[size++] = (*data_)[offset_++];
+    if ((*data_)[offset_ - 1] == '\n') break;
+  }
+  if (size < buffer_size) buffer[size] = '\0';
+  return size > 0 ? buffer : NULL;
+}
+
+int TFile::FRead(void* buffer, int size, int count) {
+  ASSERT_HOST(!is_writing_);
+  int required_size = size * count;
+  if (required_size <= 0) return 0;
+  char* char_buffer = reinterpret_cast<char*>(buffer);
+  if (data_->size() - offset_ < required_size)
+    required_size = data_->size() - offset_;
+  if (required_size > 0)
+    memcpy(char_buffer, &(*data_)[offset_], required_size);
+  offset_ += required_size;
+  return required_size / size;
+}
+
+void TFile::Rewind() {
+  ASSERT_HOST(!is_writing_);
+  offset_ = 0;
+}
+
+void TFile::OpenWrite(GenericVector<char>* data) {
+  offset_ = 0;
+  if (data != NULL) {
+    if (data_is_owned_) delete data_;
+    data_ = data;
+    data_is_owned_ = false;
+  } else if (!data_is_owned_) {
+    data_ = new GenericVector<char>;
+    data_is_owned_ = true;
+  }
+  is_writing_ = true;
+  data_->truncate(0);
+}
+
+bool TFile::CloseWrite(const STRING& filename, FileWriter writer) {
+  ASSERT_HOST(is_writing_);
+  if (writer == NULL)
+    return SaveDataToFile(*data_, filename);
+  else
+    return (*writer)(*data_, filename);
+}
+
+int TFile::FWrite(const void* buffer, int size, int count) {
+  ASSERT_HOST(is_writing_);
+  int total = size * count;
+  if (total <= 0) return 0;
+  const char* buf = reinterpret_cast<const char*>(buffer);
+  // This isn't very efficient, but memory is so fast compared to disk
+  // that it is relatively unimportant, and very simple.
+  for (int i = 0; i < total; ++i)
+    data_->push_back(buf[i]);
+  return count;
 }
 
 
-DLLSYM void serialise_bytes(FILE *f, void *ptr, int size) {
-  /*
-  printf( "Serialising bytes\n" );
-  printf( "  Addr: %d    Size: %d\n", int(ptr), size );
-  */
-  if (fwrite (ptr, size, 1, f) != 1)
-    WRITEFAILED.error ("serialise_bytes", ABORT, NULL);
-}
+}  // namespace tesseract.
 
-
-DLLSYM void serialise_INT32(FILE *f, inT32 the_int) {
-  if (fprintf (f, INT32FORMAT "\n", the_int) < 0)
-    WRITEFAILED.error ("serialise_INT32", ABORT, NULL);
-}
-
-
-DLLSYM inT32 de_serialise_INT32(FILE *f) {
-  inT32 the_int;
-
-  if (fscanf (f, INT32FORMAT, &the_int) != 1)
-    READFAILED.error ("de_serialise_INT32", ABORT, NULL);
-  return the_int;
-}
-
-
-DLLSYM void serialise_FLOAT64(FILE *f, double the_float) {
-  if (fprintf (f, "%g\n", the_float) < 0)
-    WRITEFAILED.error ("serialise_FLOAT64", ABORT, NULL);
-}
-
-
-DLLSYM double de_serialise_FLOAT64(FILE *f) {
-  double the_float;
-
-  if (fscanf (f, "%lg", &the_float) != 1)
-    READFAILED.error ("de_serialise_FLOAT64", ABORT, NULL);
-  return the_float;
-}
-
-
-/**********************************************************************
- * reverse32
- *
- * Byte swap an inT32 or uinT32.
- **********************************************************************/
-
-DLLSYM uinT32 reverse32(            //switch endian
-                        uinT32 num  //number to fix
-                       ) {
-  return (reverse16 ((uinT16) (num & 0xffff)) << 16)
-    | reverse16 ((uinT16) ((num >> 16) & 0xffff));
-}
-
-
-/**********************************************************************
- * reverse16
- *
- * Byte swap an inT16 or uinT16.
- **********************************************************************/
-
-DLLSYM uinT16 reverse16(            //switch endian
-                        uinT16 num  //number to fix
-                       ) {
-  return ((num & 0xff) << 8) | ((num >> 8) & 0xff);
-}

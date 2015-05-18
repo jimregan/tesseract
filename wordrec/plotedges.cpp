@@ -30,6 +30,13 @@
 #include "render.h"
 #include "split.h"
 
+// Include automatically generated configuration file if running autoconf.
+#ifdef HAVE_CONFIG_H
+#include "config_auto.h"
+#endif
+
+#ifndef GRAPHICS_DISABLED
+
 /*----------------------------------------------------------------------
               V a r i a b l e s
 ----------------------------------------------------------------------*/
@@ -69,9 +76,9 @@ void display_edgepts(LIST outlines) {
  **********************************************************************/
 void draw_blob_edges(TBLOB *blob) {
   TESSLINE *ol;
-  LIST edge_list = NIL;
+  LIST edge_list = NIL_LIST;
 
-  if (display_splits) {
+  if (wordrec_display_splits) {
     for (ol = blob->outlines; ol != NULL; ol = ol->next)
       push_on (edge_list, ol->loop);
     display_edgepts(edge_list);
@@ -112,19 +119,4 @@ void mark_outline(EDGEPT *edgept) {  /* Start of point list */
   c_make_current(window);
 }
 
-
-/**********************************************************************
- * mark_split
- *
- * Set up the marks list to be displayed in subsequent updates and draw
- * the marks in the current window.  The marks are stored in the second
- * sublist. The first sublist is left unmodified.
- **********************************************************************/
-void mark_split(SPLIT *split) {
-  void *window = edge_window;
-
-  c_line_color_index(window, Green);
-  c_move (window, (float) split->point1->pos.x, (float) split->point1->pos.y);
-  c_draw (window, (float) split->point2->pos.x, (float) split->point2->pos.y);
-  c_make_current(window);
-}
+#endif  // GRAPHICS_DISABLED
